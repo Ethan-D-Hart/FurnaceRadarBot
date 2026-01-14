@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
+
 TOKEN = os.getenv("BOT_TOKEN")
 IFTTT_KEY = os.getenv("IFTTT_KEY")
 EVENT_NAME = "add_spotify_song"
