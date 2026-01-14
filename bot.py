@@ -29,9 +29,9 @@ def run_health_server():
 def get_spotify_track_ids(url):
     try:
         # Extract Spotify ID from URL
-        spotify_id_match = re.search(r'/s/([a-zA-Z0-9]+)', url)
+        spotify_id_match = re.search(r'/([^/]+)/([a-zA-Z0-9]+)', url)
         if not spotify_id_match: return []
-        spotify_id = spotify_id_match.group(1)
+        spotify_id = spotify_id_match.group(2)
 
         # Use Odesli to check if it's a single track
         api_url = f"https://api.song.link/v1-alpha.1/links?url={url}"
