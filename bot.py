@@ -1,101 +1,124 @@
+import os
 import requests
 import logging
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- LOGGING ---
+# --- DUMMY SERVER FOR KOYEB HEALTH CHECK ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+    def log_message(self, format, *args):
+        return # Silence logs from the dummy server
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info(f"🕸️ Health check server started on port {port}")
+    server.serve_forever()
+
+# --- YOUR EXISTING LOGIC ---
+TOKEN = os.getenv("BOT_TOKEN")
+IFTTT_KEY = os.getenv("IFTTT_KEY")
+EVENT_NAME = "add_spotify_song"
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger("AOTY_O2S")
 
-# --- CONFIG ---
-TOKEN = "8542325435:AAHCPZQg5j0EmGx7W9N6KpIYmNcdtH83p70"
-IFTTT_KEY = "tx1qmZkEiRz4WQ_T7o3oL"
-EVENT_NAME = "add_spotify_song"
-
 def get_tracks_from_entities(odesli_url):
-    """Universal Entity Unpacking"""
+    """Extracts all song titles from the native Odesli response entities"""
     try:
         api_url = f"https://api.song.link/v1-alpha.1/links?url={odesli_url}"
         r = requests.get(api_url).json()
         
+        # Get the main album artist to filter out random 'related' songs
         main_entity_id = r.get('entityUniqueId')
         main_info = r.get('entitiesByUniqueId', {}).get(main_entity_id, {})
         album_artist = main_info.get('artistName', '').lower()
         album_title = main_info.get('title', '').lower()
 
+        logger.info(f"🔍 Analyzing Album Entities: {album_title} by {album_artist}")
+
         tracks = []
         seen_titles = set()
+
+        # Odesli returns a list of 'entitiesByUniqueId'
+        # For albums, this OFTEN contains the individual songs if they are available
         entities = r.get('entitiesByUniqueId', {})
         
         for eid, info in entities.items():
+            # We only want 'song' types
             if info.get('type') == 'song':
                 title = info.get('title')
                 artist = info.get('artistName')
+                
+                # Verify it's actually by the same artist and not a duplicate
                 if album_artist in artist.lower() and title.lower() not in seen_titles:
                     tracks.append({"title": title, "artist": artist})
                     seen_titles.add(title.lower())
         
+        # FALLBACK: If Odesli didn't list the songs, we use the iTunes search as a last resort
         if not tracks:
-            # Fallback to iTunes Search
-            it_res = requests.get(f"https://itunes.apple.com/search?term={album_title} {album_artist}&entity=song&limit=40").json()
+            logger.info("No songs found in Odesli entities. Trying iTunes fallback...")
+            itunes_url = f"https://itunes.apple.com/search?term={album_title} {album_artist}&entity=song&limit=40"
+            it_res = requests.get(itunes_url).json()
             for item in it_res.get('results', []):
                 if album_title in item.get('collectionName', '').lower() and item.get('trackName').lower() not in seen_titles:
                     tracks.append({"title": item.get('trackName'), "artist": item.get('artistName')})
                     seen_titles.add(item.get('trackName').lower())
-        return tracks
-    except: return []
 
-def render_progress_bar(current, total):
-    """Generates a visual [███░░] bar"""
-    size = 10
-    filled = int(size * current / total)
-    bar = "█" * filled + "░" * (size - filled)
-    percent = int((current / total) * 100)
-    return f"`{bar}` {percent}% ({current}/{total})"
+        return tracks
+
+    except Exception as e:
+        logger.error(f"❌ Error extracting tracks: {e}")
+        return []
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     url = next((w for w in text.split() if "http" in w), None)
     
     if url and any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
-        status_msg = await update.message.reply_text("📡 Analyzing Album...")
+        msg = await update.message.reply_text("📡 Connecting to Odesli...")
         
         tracks = get_tracks_from_entities(url)
         
         if not tracks:
-            await status_msg.edit_text("❌ No tracks found.")
+            await msg.edit_text("❌ Could not extract a tracklist for this album.")
             return
 
-        total = len(tracks)
-        await status_msg.edit_text(f"🚀 Found {total} tracks. Adding to Spotify...\n{render_progress_bar(0, total)}")
+        await msg.edit_text(f"📦 Found {len(tracks)} tracks. Sending to Spotify...")
         
         success = 0
         for i, track in enumerate(tracks):
+            # The Trigger
             ifttt_url = f"https://maker.ifttt.com/trigger/{EVENT_NAME}/with/key/{IFTTT_KEY}"
+            payload = {"value1": track['title'], "value2": track['artist']}
+            
             try:
-                res = requests.post(ifttt_url, json={"value1": track['title'], "value2": track['artist']})
+                res = requests.post(ifttt_url, json=payload)
                 if res.status_code == 200:
                     success += 1
-            except: pass
+                    logger.info(f"[{success}/{len(tracks)}] Sent: {track['title']}")
+            except:
+                logger.error(f"Failed to send {track['title']}")
 
-            # Update the loading bar every 1-2 tracks to avoid Telegram rate limits
-            if (i + 1) % 1 == 0 or (i + 1) == total:
-                progress_text = (
-                    f"📦 **Adding tracks to Spotify...**\n"
-                    f"Current: _{track['title']}_\n\n"
-                    f"{render_progress_bar(i + 1, total)}"
-                )
-                try:
-                    await status_msg.edit_text(progress_text, parse_mode="Markdown")
-                except: pass # Ignore 'message not modified' errors
+            time.sleep(0.6) # Safe delay
 
-            time.sleep(0.7) # Safety delay for IFTTT and Telegram
-
-        await update.message.reply_text(f"✅ **Mission Complete**\nAdded {success} tracks to your playlist.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Mission Complete. Added {success} songs.")
 
 if __name__ == '__main__':
+    # 1. Start the Health Check server in a background thread
+    threading.Thread(target=run_health_server, daemon=True).start()
+
+    # 2. Start the Telegram Bot
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    logger.info("AOTY_O2S_BOT with Progress Bar is Live.")
+    app.add_handler(CommandHandler("add", add_album))
+    logger.info("Cloud Bot is online with Health Check bypass...")
     app.run_polling()
