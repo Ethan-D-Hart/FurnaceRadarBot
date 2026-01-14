@@ -25,24 +25,44 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# --- TRACK ID EXTRACTOR (MAINTAINS ORDER) ---
+# --- UNIVERSAL TRACK ID EXTRACTOR ---
 def get_spotify_track_ids(url):
     try:
-        # Extract Spotify ID from URL
-        spotify_id_match = re.search(r'/s/([a-zA-Z0-9]+)', url)
-        if not spotify_id_match: return []
-        spotify_id = spotify_id_match.group(1)
+        # 1. Infer platform from URL
+        is_itunes = "/i/" in url or "/us/i/" in url
+        is_spotify = "/s/" in url
+        
+        logger.info(f"Inferring platform: {'iTunes' if is_itunes else 'Spotify' if is_spotify else 'Unknown'}")
 
-        # Use Odesli to check if it's a single track
+        # 2. Use Odesli to resolve the link to Spotify IDs regardless of source
         api_url = f"https://api.song.link/v1-alpha.1/links?url={url}"
         r = requests.get(api_url).json()
+        
+        # Grab Spotify data from the linksByPlatform object
+        spotify_data = r.get('linksByPlatform', {}).get('spotify', {})
+        spotify_url = spotify_data.get('url')
+        
+        if not spotify_url:
+            logger.warning(f"Could not find a Spotify equivalent for: {url}")
+            return []
+
+        # Extract Spotify ID from the resolved URL
+        # Handles /album/, /track/, or /s/
+        spotify_id_match = re.search(r'spotify\.com/(?:album|track|s)/([a-zA-Z0-9]+)', spotify_url)
+        if not spotify_id_match:
+            # Fallback to Odesli's unique ID format
+            spotify_id = spotify_data.get('entityUniqueId', '').split('::')[-1]
+        else:
+            spotify_id = spotify_id_match.group(1)
+
+        # 3. Check if it's a single track or an album via Odesli metadata
         main_id = r.get('entityUniqueId')
         main_info = r.get('entitiesByUniqueId', {}).get(main_id, {})
 
         if main_info.get('type') == 'song':
             return [spotify_id]
 
-        # If it's an album, unpack all Track IDs via Spotify Embed
+        # 4. For Albums, unpack all Track IDs via Spotify Embed using the resolved ID
         embed_url = f"https://open.spotify.com/embed/album/{spotify_id}"
         response = requests.get(embed_url, headers={'User-Agent': 'Mozilla/5.0'})
         pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
@@ -51,7 +71,7 @@ def get_spotify_track_ids(url):
         if match:
             data = json.loads(match.group(1))
             album_data = data['props']['pageProps']['state']['data']['entity']
-            # trackList is ordered 1-N. We map them into a list to preserve that index.
+            # Extract track IDs from the Spotify entity data
             track_ids = [t['uri'].split(':')[-1] for t in album_data.get('trackList', [])]
             return track_ids
             
@@ -60,10 +80,10 @@ def get_spotify_track_ids(url):
         logger.error(f"Error fetching IDs: {e}")
         return []
 
-# --- MESSAGE HANDLER ---
+# --- MESSAGE HANDLER (WORKS FOR TOPICS & CHANNELS) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if not text: return
+    msg = update.channel_post or update.message
+    if not msg or not msg.text: return
     
     url = next((w for w in text.split() if "http" in w), None)
     
@@ -75,7 +95,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("No track IDs found for this link.")
             return
 
-        logger.info(f"✅ Found {len(track_ids)} tracks. Adding in order...")
+        logger.info(f"✅ Found {len(track_ids)} tracks. Processing...")
 
         for tid in track_ids:
             ifttt_url = f"https://maker.ifttt.com/trigger/{EVENT_NAME}/with/key/{IFTTT_KEY}"
@@ -86,17 +106,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if response.status_code == 200:
                     logger.info(f"🚀 Sent to IFTTT: {tid}")
                 else:
-                    logger.error(f"❌ IFTTT Error ({response.status_code}): {response.text}")
+                    logger.error(f"❌ IFTTT Error: {response.status_code}")
             except Exception as e:
                 logger.error(f"❌ Connection Error: {e}")
             
-            # CRITICAL: 2-second sleep ensures Spotify processes the add
-            # before the next webhook arrives, preserving the 'Date Added' order.
             time.sleep(2)
 
 if __name__ == '__main__':
     threading.Thread(target=run_health_server, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    # Listen to standard messages, topics, and channel posts
+    message_filter = (filters.TEXT & (~filters.COMMAND)) | filters.ChatType.CHANNEL
+    app.add_handler(MessageHandler(message_filter, handle_message))
+    
     logger.info("Bot is active on Koyeb...")
     app.run_polling()
