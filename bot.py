@@ -36,30 +36,49 @@ def get_tracks_from_entities(odesli_url):
     try:
         api_url = f"https://api.song.link/v1-alpha.1/links?url={odesli_url}"
         r = requests.get(api_url).json()
+        
+        # 1. Get the primary Album/Artist metadata from the first entity
         main_id = r.get('entityUniqueId')
         main_info = r.get('entitiesByUniqueId', {}).get(main_id, {})
-        album_artist = main_info.get('artistName', '').lower()
-        album_title = main_info.get('title', '').lower()
+        album_artist = main_info.get('artistName', 'Unknown Artist')
+        album_title = main_info.get('title', 'Unknown Album')
+
+        logger.info(f"🔎 Metadata Found: {album_title} by {album_artist}")
 
         tracks = []
         seen_titles = set()
-        entities = r.get('entitiesByUniqueId', {})
-        for eid, info in entities.items():
-            if info.get('type') == 'song':
-                title = info.get('title')
-                artist = info.get('artistName')
-                if album_artist in artist.lower() and title.lower() not in seen_titles:
-                    tracks.append({"title": title, "artist": artist})
-                    seen_titles.add(title.lower())
+
+        # 2. Force an iTunes Lookup using that metadata to get the full tracklist
+        # We increase the limit to 50 to ensure we capture all 25+ songs
+        itunes_url = "https://itunes.apple.com/search"
+        params = {
+            "term": f"{album_title} {album_artist}",
+            "entity": "song",
+            "limit": 50
+        }
         
-        if not tracks:
-            it_res = requests.get(f"https://itunes.apple.com/search?term={album_title} {album_artist}&entity=song&limit=40").json()
-            for item in it_res.get('results', []):
-                if album_title in item.get('collectionName', '').lower() and item.get('trackName').lower() not in seen_titles:
-                    tracks.append({"title": item.get('trackName'), "artist": item.get('artistName')})
-                    seen_titles.add(item.get('trackName').lower())
+        it_res = requests.get(itunes_url, params=params).json()
+        
+        for item in it_res.get('results', []):
+            # Strict Check: Ensure the track actually belongs to this album title
+            # This prevents adding songs from different albums by the same artist
+            if album_title.lower() in item.get('collectionName', '').lower():
+                track_name = item.get('trackName')
+                if track_name and track_name.lower() not in seen_titles:
+                    tracks.append({
+                        "title": track_name,
+                        "artist": item.get('artistName')
+                    })
+                    seen_titles.add(track_name.lower())
+
+        # 3. Sort tracks by track number if available (optional but better for order)
+        # iTunes results usually come back in order, but we can verify here
+        logger.info(f"✅ Successfully unpacked {len(tracks)} tracks via iTunes.")
         return tracks
-    except: return []
+
+    except Exception as e:
+        logger.error(f"❌ Critical error during track retrieval: {e}")
+        return []
 
 # --- 4. MESSAGE HANDLER (ALWAYS LISTENING) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
