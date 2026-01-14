@@ -5,11 +5,11 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 # --- 1. CONFIG ---
-TOKEN = "8542325435:AAHCPZQg5j0EmGx7W9N6KpIYmNcdtH83p70"
-IFTTT_KEY = "tx1qmZkEiRz4WQ_T7o3oL"
+TOKEN = os.getenv("BOT_TOKEN")
+IFTTT_KEY = os.getenv("IFTTT_KEY")
 EVENT_NAME = "add_spotify_song"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -61,35 +61,42 @@ def get_tracks_from_entities(odesli_url):
         return tracks
     except: return []
 
-# --- 4. COMMAND HANDLER ---
-async def add_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
-    url = context.args[0]
+# --- 4. MESSAGE HANDLER (ALWAYS LISTENING) ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text: return
     
-    if any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
+    # Scan for a link anywhere in the message
+    url = next((w for w in text.split() if "http" in w), None)
+    
+    if url and any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
+        # Optional: Adds a reaction so you know it's working silently
         await update.message.react(reaction="⚡")
         
+        logger.info(f"📡 Link detected: {url}")
         tracks = get_tracks_from_entities(url)
-        if not tracks: return
+        
+        if not tracks:
+            logger.warning("No tracks found.")
+            return
 
         for track in tracks:
             ifttt_url = f"https://maker.ifttt.com/trigger/{EVENT_NAME}/with/key/{IFTTT_KEY}"
             try:
                 requests.post(ifttt_url, json={"value1": track['title'], "value2": track['artist']})
-                logger.info(f"Added: {track['title']}")
+                logger.info(f"✅ Added: {track['title']}")
             except: pass
             time.sleep(0.7)
 
 # --- 5. MAIN STARTUP ---
 if __name__ == '__main__':
-    # Start health server thread
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    # Start Telegram Bot
     if not TOKEN:
-        logger.error("BOT_TOKEN is missing!")
+        logger.error("BOT_TOKEN environment variable is missing!")
     else:
         app = ApplicationBuilder().token(TOKEN).build()
-        app.add_handler(CommandHandler("add", add_album))
-        logger.info("AOTY_O2S_BOT: Cloud Deployment Successful.")
+        # Changed back to MessageHandler to listen to all text
+        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        logger.info("AOTY_O2S_BOT: Always-On Listener Active.")
         app.run_polling()
