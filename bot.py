@@ -24,9 +24,9 @@ def run_health_server():
     logger.info(f"🕸️ Health check server started on port {port}")
     server.serve_forever()
 
-# --- YOUR EXISTING LOGIC ---
-TOKEN = os.getenv("BOT_TOKEN")
-IFTTT_KEY = os.getenv("IFTTT_KEY")
+# --- CONFIG ---
+TOKEN = "8542325435:AAHCPZQg5j0EmGx7W9N6KpIYmNcdtH83p70"
+IFTTT_KEY = "tx1qmZkEiRz4WQ_T7o3oL"
 EVENT_NAME = "add_spotify_song"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
