@@ -34,50 +34,49 @@ def run_health_server():
 # --- 3. TRACK RETRIEVAL LOGIC ---
 def get_tracks_from_entities(odesli_url):
     try:
+        # 1. Get Album/Artist names from Odesli
         api_url = f"https://api.song.link/v1-alpha.1/links?url={odesli_url}"
         r = requests.get(api_url).json()
         
-        # 1. Get the primary Album/Artist metadata from the first entity
         main_id = r.get('entityUniqueId')
         main_info = r.get('entitiesByUniqueId', {}).get(main_id, {})
-        album_artist = main_info.get('artistName', 'Unknown Artist')
-        album_title = main_info.get('title', 'Unknown Album')
+        album_artist = main_info.get('artistName', '')
+        album_title = main_info.get('title', '')
 
-        logger.info(f"🔎 Metadata Found: {album_title} by {album_artist}")
+        # 2. STEP ONE: Find the Album ID
+        search_url = "https://itunes.apple.com/search"
+        search_params = {
+            "term": f"{album_title} {album_artist}",
+            "entity": "album", # We search for the ALBUM first, not songs
+            "limit": 1
+        }
+        search_res = requests.get(search_url, params=search_params).json()
+        
+        if not search_res.get('results'):
+            return []
+
+        collection_id = search_res['results'][0].get('collectionId')
+
+        # 3. STEP TWO: Lookup all tracks by that specific Collection ID
+        # This is the 'Secret Sauce' that gets every single song on the disc
+        lookup_url = f"https://itunes.apple.com/lookup?id={collection_id}&entity=song"
+        lookup_res = requests.get(lookup_url).json()
 
         tracks = []
-        seen_titles = set()
+        for item in lookup_res.get('results', []):
+            # The lookup returns the 'collection' (album) as the first item,
+            # so we only grab the items that are actually 'track' types.
+            if item.get('wrapperType') == 'track':
+                tracks.append({
+                    "title": item.get('trackName'),
+                    "artist": item.get('artistName')
+                })
 
-        # 2. Force an iTunes Lookup using that metadata to get the full tracklist
-        # We increase the limit to 50 to ensure we capture all 25+ songs
-        itunes_url = "https://itunes.apple.com/search"
-        params = {
-            "term": f"{album_title} {album_artist}",
-            "entity": "song",
-            "limit": 50
-        }
-        
-        it_res = requests.get(itunes_url, params=params).json()
-        
-        for item in it_res.get('results', []):
-            # Strict Check: Ensure the track actually belongs to this album title
-            # This prevents adding songs from different albums by the same artist
-            if album_title.lower() in item.get('collectionName', '').lower():
-                track_name = item.get('trackName')
-                if track_name and track_name.lower() not in seen_titles:
-                    tracks.append({
-                        "title": track_name,
-                        "artist": item.get('artistName')
-                    })
-                    seen_titles.add(track_name.lower())
-
-        # 3. Sort tracks by track number if available (optional but better for order)
-        # iTunes results usually come back in order, but we can verify here
-        logger.info(f"✅ Successfully unpacked {len(tracks)} tracks via iTunes.")
+        logger.info(f"✅ Deep Lookup found {len(tracks)} tracks for ID {collection_id}")
         return tracks
 
     except Exception as e:
-        logger.error(f"❌ Critical error during track retrieval: {e}")
+        logger.error(f"❌ Lookup Error: {e}")
         return []
 
 # --- 4. MESSAGE HANDLER (ALWAYS LISTENING) ---
