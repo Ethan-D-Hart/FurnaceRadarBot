@@ -66,12 +66,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text: return
     
-    # Scan for a link anywhere in the message
     url = next((w for w in text.split() if "http" in w), None)
     
     if url and any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
-        # Optional: Adds a reaction so you know it's working silently
-        await update.message.react(reaction="⚡")
+        # Use the more compatible way to react
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=update.effective_chat.id,
+                message_id=update.message.message_id,
+                reaction=[{"type": "emoji", "emoji": "⚡"}]
+            )
+        except Exception as e:
+            logger.warning(f"Could not add reaction: {e}")
         
         logger.info(f"📡 Link detected: {url}")
         tracks = get_tracks_from_entities(url)
