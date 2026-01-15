@@ -1,0 +1,6 @@
+# Ignore Python temporary files
+__pycache__/
+*.pyc
+
+# Ignore Docker build logs
+*.log
