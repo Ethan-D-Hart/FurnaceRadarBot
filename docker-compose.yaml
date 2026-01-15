@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  aoty-bot:
+    build: .
+    container_name: furnace_radar_bot
+    restart: always
+    environment:
+      - BOT_TOKEN=
+      - IFTTT_KEY=
