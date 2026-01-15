@@ -1,3 +1,6 @@
+# Ignore sensitive tokens
+.env
+
 # Ignore Python temporary files
 __pycache__/
 *.pyc
