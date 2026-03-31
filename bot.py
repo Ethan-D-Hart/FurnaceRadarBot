@@ -5,6 +5,7 @@ import time
 import re
 import json
 from datetime import datetime
+from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
@@ -94,9 +95,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not msg.text:
         return
 
-    url = next((w for w in msg.text.split() if "http" in w), None)
-    
-    if url and any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
+    supported_domains = {"open.spotify.com", "album.link", "odesli.co", "song.link"}
+    url = next(
+        (w for w in msg.text.split()
+         if (p := urlparse(w)).scheme in ("http", "https") and p.hostname in supported_domains),
+        None
+    )
+
+    if url:
         start_proc = time.time()
         
         content_type, title, artist, tracks = get_spotify_data(url)
