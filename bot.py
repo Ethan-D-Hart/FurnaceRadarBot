@@ -19,6 +19,10 @@ INTERACTIONS_COUNT = 0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger("AOTY_O2S")
+SPOTIFY_URL_PATTERN = re.compile(
+    r'^https?://open\.spotify\.com/(?P<kind>album|track|song)/(?P<sid>[A-Za-z0-9]+)',
+    re.IGNORECASE
+)
 
 # --- MONITORING UTILITIES ---
 
@@ -40,46 +44,54 @@ def send_telegram_log(message, silent=False):
 
 # --- DATA EXTRACTION ---
 
+def extract_urls(text):
+    raw_urls = re.findall(r'https?://\S+', text)
+    return [u.rstrip(').,;!?:]') for u in raw_urls]
+
+
+def parse_spotify_url(url):
+    match = SPOTIFY_URL_PATTERN.search(url)
+    if not match:
+        return None, None
+    kind = match.group('kind').lower()
+    if kind == 'song':
+        kind = 'track'
+    spotify_id = match.group('sid')
+    return kind, spotify_id
+
 def get_spotify_data(url):
     try:
-        api_url = f"https://api.song.link/v1-alpha.1/links?url={url}"
-        r = requests.get(api_url).json()
-        
-        main_id = r.get('entityUniqueId')
-        main_info = r.get('entitiesByUniqueId', {}).get(main_id, {})
-        title = main_info.get('title', 'Unknown Title')
-        artist = main_info.get('artistName', 'Unknown Artist')
-        content_type = main_info.get('type', 'song')
+        content_type, spotify_id = parse_spotify_url(url)
+        if not spotify_id:
+            return None, "Unknown", "Unknown", []
 
-        spotify_data = r.get('linksByPlatform', {}).get('spotify', {})
-        spotify_url = spotify_data.get('url')
-        
-        if not spotify_url:
-            return content_type, title, artist, []
-
-        id_match = re.search(r'spotify\.com/(?:album|track|s)/([a-zA-Z0-9]+)', spotify_url)
-        spotify_id = id_match.group(1) if id_match else spotify_data.get('entityUniqueId', '').split('::')[-1]
-
-        if content_type == 'song':
-            return 'song', title, artist, [{"id": spotify_id, "name": title}]
+        if content_type == 'track':
+            return 'song', 'Spotify Track', 'Unknown Artist', [{"id": spotify_id, "name": 'Spotify Track'}]
 
         embed_url = f"https://open.spotify.com/embed/album/{spotify_id}"
-        response = requests.get(embed_url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = requests.get(embed_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
         pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
         match = re.search(pattern, response.text)
         
         if match:
             data = json.loads(match.group(1))
-            album_data = data['props']['pageProps']['state']['data']['entity']
+            album_data = data.get('props', {}).get('pageProps', {}).get('state', {}).get('data', {}).get('entity', {})
+            title = album_data.get('name', 'Unknown Album')
+            artists = album_data.get('artists', [])
+            artist = ", ".join(a.get('name') for a in artists if a.get('name')) or 'Unknown Artist'
             track_list = []
             for t in album_data.get('trackList', []):
+                track_uri = t.get('uri', '')
+                track_id = track_uri.split(':')[-1] if ':' in track_uri else ''
+                if not track_id:
+                    continue
                 track_list.append({
-                    "id": t['uri'].split(':')[-1],
+                    "id": track_id,
                     "name": t.get('trackTitle', 'Unknown Track')
                 })
             return 'album', title, artist, track_list
             
-        return 'album', title, artist, []
+        return 'album', 'Unknown Album', 'Unknown Artist', []
     except Exception as e:
         logger.exception("Error during metadata extraction")
         return None, "Error", "Error", []
@@ -94,9 +106,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not msg.text:
         return
 
-    url = next((w for w in msg.text.split() if "http" in w), None)
+    urls = extract_urls(msg.text)
+    url = next((u for u in urls if parse_spotify_url(u)[0] in ["album", "track"]), None)
     
-    if url and any(domain in url for domain in ["album.link", "odesli.co", "song.link"]):
+    if url:
         start_proc = time.time()
         
         content_type, title, artist, tracks = get_spotify_data(url)
