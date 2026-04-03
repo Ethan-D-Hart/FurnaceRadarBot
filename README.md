@@ -1,16 +1,16 @@
 # AOTY_O2S_BOT
 
-A technical middleware service that automates the transition from music discovery on Telegram to playlist curation on Spotify. This bot intercepts **Odesli (Songlink/Albumlink)** URLs, resolves platform-agnostic metadata, and serializes track insertion via IFTTT.
+A technical middleware service that automates the transition from music discovery on Telegram to playlist curation on Spotify. The bot scans Telegram messages for Spotify links, ignores Apple Music links, and serializes track insertion via IFTTT.
 
 ## ⚙️ Technical Architecture
 
 The bot functions as a stateless bridge, employing the following logic flow:
 
 1. **Ingestion**: Monitors `channel_post` and `message` updates via the `python-telegram-bot` library.
-2. **Platform Inference**: Detects URL structures for Spotify (`/s/`) or Apple Music (`/i/`).
-3. **Entity Resolution**: Queries the Odesli API (`v1-alpha.1/links`) to map input URLs to a canonical Spotify `entityUniqueId`, resolving numeric iTunes IDs to Spotify Base62 IDs.
-4. **Metadata Expansion**: For album entities, the service scrapes the Spotify Embed JSON blob (`__NEXT_DATA__`) to bypass standard API tracklist truncation, ensuring 100% capture of large (25+) tracklists.
-5. **Serialization**: Forwards Track IDs to IFTTT Webhooks with a 2000ms `time.sleep` interval to prevent race conditions and preserve the original album's chronological "Date Added" order.
+2. **URL Selection**: Extracts all URLs from the message and uses the **first** supported Spotify URL in message order (`open.spotify.com/track/...` or `open.spotify.com/album/...`).
+3. **Apple Ignore Rule**: Apple Music links may be present in the same message but are ignored.
+4. **Metadata Expansion**: For album entities, the service scrapes the Spotify Embed JSON blob (`__NEXT_DATA__`) to capture all track IDs from the album tracklist.
+5. **Serialization**: Forwards track IDs to IFTTT Webhooks with a 2000ms `time.sleep` interval to preserve insertion order.
 
 ## 🛠 Configuration
 
@@ -22,7 +22,6 @@ The following variables must be configured in your deployment environment:
 | --- | --- |
 | `BOT_TOKEN` | Telegram Bot API token provided by `@BotFather`. |
 | `IFTTT_KEY` | Unique Webhook key from your IFTTT Maker service. |
-| `PORT` | The internal port for the HTTP health check (default: `8000`). |
 
 ### IFTTT Applet Setup
 
@@ -40,10 +39,6 @@ To handle the automated addition, configure an IFTTT Applet as follows:
 
 ## 🖥 Deployment
 
-### Health Check & Uptime
-
-The bot includes a lightweight `HTTPServer` running on a background thread. This is designed for cloud providers (like Koyeb) to perform GET requests against the `/` route to verify container health.
-
 ### Installation
 
 ```bash
@@ -51,16 +46,53 @@ The bot includes a lightweight `HTTPServer` running on a background thread. This
 git clone https://github.com/yourusername/aoty_o2s_bot.git
 
 # Install dependencies
-pip install python-telegram-bot requests
+pip install -r requirements.txt
 
 # Run the service
 python bot.py
 
 ```
 
-## 💾 Core Logic: Platform Resolution
+### Docker Compose
 
-The service ensures that numeric Apple Music IDs are converted to Spotify-readable formats before being sent to the IFTTT pipeline.
+Create a `.env` file in the project root with your credentials:
+
+```env
+BOT_TOKEN=your_telegram_bot_token
+IFTTT_KEY=your_ifttt_webhook_key
+LOG_CHAT_ID=your_log_chat_id   # optional
+```
+
+Build and start the container in the background:
+
+```bash
+docker compose up -d --build
+```
+
+**View logs:**
+
+```bash
+# Follow live logs (Ctrl+C to stop)
+docker compose logs -f
+
+# View the last 100 lines and follow
+docker compose logs --tail=100 -f
+
+# View logs without following
+docker compose logs
+```
+
+Stop the container:
+
+```bash
+docker compose down
+```
+
+> Logs are stored using the `json-file` driver (max 10 MB per file, 3 files), so they rotate automatically and won't fill the host disk.
+
+## 💾 Core Logic: Spotify URL Extraction
+
+The service reads raw message text, picks the first supported Spotify URL, and extracts the Spotify entity ID (`track` or `album`) before sending IDs through the IFTTT pipeline.
 
 ```python
 # Resolution logic for iTunes to Spotify mapping
