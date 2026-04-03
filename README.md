@@ -53,6 +53,43 @@ python bot.py
 
 ```
 
+### Docker Compose
+
+Create a `.env` file in the project root with your credentials:
+
+```env
+BOT_TOKEN=your_telegram_bot_token
+IFTTT_KEY=your_ifttt_webhook_key
+LOG_CHAT_ID=your_log_chat_id   # optional
+```
+
+Build and start the container in the background:
+
+```bash
+docker compose up -d --build
+```
+
+**View logs:**
+
+```bash
+# Follow live logs (Ctrl+C to stop)
+docker compose logs -f
+
+# View the last 100 lines and follow
+docker compose logs --tail=100 -f
+
+# View logs without following
+docker compose logs
+```
+
+Stop the container:
+
+```bash
+docker compose down
+```
+
+> Logs are stored using the `json-file` driver (max 10 MB per file, 3 files), so they rotate automatically and won't fill the host disk.
+
 ## 💾 Core Logic: Spotify URL Extraction
 
 The service reads raw message text, picks the first supported Spotify URL, and extracts the Spotify entity ID (`track` or `album`) before sending IDs through the IFTTT pipeline.
